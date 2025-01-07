@@ -1,0 +1,7 @@
+# ignore python caches
+__pycache__/
+# ignore vscode settings
+.vscode/
+.env
+# ignore .DS_Store
+.DS_Store

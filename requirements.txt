@@ -1,0 +1,11 @@
+langchain-text-splitters 
+langchain-community 
+langgraph
+langchain-openai
+langchain-core
+bs4
+sqlite-vss
+fastapi
+uvicorn
+python-telegram-bot
+jq
