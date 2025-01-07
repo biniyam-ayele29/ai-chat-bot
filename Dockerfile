@@ -1,5 +1,5 @@
 # add the contents of the Dockerfile here for python uvicorn server
-FROM python:3.10
+FROM python:3.12-slim
 
 WORKDIR /app
 
