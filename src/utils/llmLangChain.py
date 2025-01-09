@@ -1,25 +1,18 @@
 import getpass
 import os
-import sqlite3
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 import bs4
-import re
 from langchain_community.document_loaders import WebBaseLoader, JSONLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import START, END, StateGraph
 from langchain_community.vectorstores import SQLiteVSS
-from typing import Literal
 from langgraph.graph import MessagesState
 from langchain_core.tools import tool
 from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage
+from src.utils.dbConnection import DBConnection
 import requests, json
-
-from langchain.output_parsers import RegexParser
-from langchain.prompts import ChatPromptTemplate
-from langchain.chains import LLMChain
 
 class LLMLangchainBanking:
     def __init__(self):
@@ -27,9 +20,7 @@ class LLMLangchainBanking:
             os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter API key for OpenAI: ")
         self.llm = ChatOpenAI(model="gpt-4o")
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-        self.db_path = "src/database/vector_store.db"
-        self.connection = SQLiteVSS.create_connection(db_file=self.db_path)
-        self.vector_store = None
+        self.dbConnection = DBConnection()
         self.blog_posts = [
             "https://oromiabank.com/who-we-are/#corporate-statement",
             "https://oromiabank.com/conventional/",
@@ -143,16 +134,19 @@ class LLMLangchainBanking:
             'wdtNonce': 'dca58721ad'
         }
 
-        response = requests.post(url, headers=headers, data=data)
-        response.raise_for_status()  # Ensure we notice bad responses
+        try: 
+            response = requests.post(url, headers=headers, data=data)
+            response.raise_for_status()  # Ensure we notice bad responses
 
-        # Assuming the response is JSON
-        data = response.json()
-        with open("src/data/branch_details.json", "w") as f:
-            json.dump(data, f)
+            # Assuming the response is JSON
+            data = response.json()
+            with open("src/data/branch_details.json", "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(e)
         return "src/data/branch_details.json"
 
-    def load_and_chunk_contents(self):
+    async def load_and_chunk_contents(self):
         web_loader = WebBaseLoader(
             web_paths=(self.blog_posts),
             bs_kwargs=dict(
@@ -182,8 +176,8 @@ class LLMLangchainBanking:
         print("Total documents: ", total_documents)
         return total_documents, all_splits
     
-    def index_chunks(self):
-        total_documents, all_splits = self.load_and_chunk_contents()
+    async def index_chunks(self) -> None:
+        total_documents, all_splits = await self.load_and_chunk_contents()
         third = total_documents // 3
 
         for i, document in enumerate(all_splits):
@@ -194,22 +188,16 @@ class LLMLangchainBanking:
             else:
                 document.metadata["section"] = "end"
 
-        vector_store = SQLiteVSS(embedding=self.embeddings, table="state_union", connection=self.connection)
+        vector_store = await self.dbConnection.get_vector_store()
         vector_store.add_documents(documents=all_splits)
-        return vector_store
+        await self.dbConnection.close_connection()
     
-    def load_vector_store(self):
+    async def retrieve_docs(self, query: str):
         try:
-            self.vector_store = SQLiteVSS(embedding=self.embeddings, table="state_union", connection=self.connection)
-        except Exception as e:
-            print(e)
-            return []
-    
-    def retrieve_docs(self, query: str):
-        try:
-            if self.vector_store is None:
-                self.load_vector_store()
-            return self.vector_store.similarity_search(query, k=2)
+            vector_store = await self.dbConnection.get_vector_store()
+            similar_docs = vector_store.similarity_search(query, k=2)
+            self.dbConnection.close_connection()
+            return similar_docs
         except Exception as e:
             print(e)
             return []
@@ -339,11 +327,11 @@ class LLMLangchainBanking:
         return response["messages"][-1].content
 
 @tool(response_format="content_and_artifact")
-def retrieve(query: str):
+async def retrieve(query: str):
     """Retrieve information related to a query."""
     try:
         llm = LLMLangchainBanking()
-        docs = llm.retrieve_docs(query)
+        docs = await llm.retrieve_docs(query)
         content = "\n\n".join(f"Source: {doc.metadata}\nContent: {doc.page_content}" for doc in docs)
         return content, docs
     except Exception as e:

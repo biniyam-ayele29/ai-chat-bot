@@ -7,3 +7,9 @@ __pycache__/
 .env
 # ignore .DS_Store
 .DS_Store
+# ignore virtual environment
+venv/
+
+# ignore all python __caches
+**/**/__pycache__/
+**/__pycache__/

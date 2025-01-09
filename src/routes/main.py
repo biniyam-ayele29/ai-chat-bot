@@ -12,24 +12,20 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 app = FastAPI()
 
 telegram_handler = TelegramHandler()
-
-application = ApplicationBuilder().token(os.environ.get("TELEGRAM_BOT_TOKEN")).build()
-
-# Register command and message handlers
-application.add_handler(CommandHandler("start", telegram_handler.start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_handler.handle_message))
 # Set webhook URL
 if not os.environ.get("WEBHOOK_URL"):
     print("Please expose WEBHOOK_URL environment variable!")
     exit()
-application.bot.set_webhook(url=os.environ.get("WEBHOOK_URL"))
     
 @app.on_event("startup")
 async def on_startup():
     # Run the Telegram bot in the background
-    background_tasks = BackgroundTasks()
-    background_tasks.add_task(application.run_polling)
-
+    # background_tasks = BackgroundTasks()
+    # background_tasks.add_task(application.run_polling)
+    await telegram_handler.init_bot()
+    # pass
+@app.route(f'/{os.environ.get("TELEGRAM_TOKEN")}', methods=['POST'])
+@telegram_handler.verify_webhook_token
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request):
     return await telegram_handler.telegram_webhook_call(request)
