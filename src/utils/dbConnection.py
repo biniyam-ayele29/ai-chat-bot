@@ -74,7 +74,7 @@ class DBConnection:
             logger.error(f"Error initializing vector store: {e}")
             raise
 
-    async def get_vector_store(self) -> SQLiteVSS:
+    async def get_vector_store(self):
         """Get or create vector store"""
         if not self.vector_store:
             await self.initialize_vector_store()

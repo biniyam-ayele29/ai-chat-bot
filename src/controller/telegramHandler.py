@@ -20,6 +20,8 @@ class TelegramHandler:
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.webhook_url = os.getenv("WEBHOOK_URL")
         self.application = None
+        import sqlite3
+        print(dir(sqlite3.Connection))
         # self.application.initialize()
         # # Register command and message handlers
         # self.application.add_handler(CommandHandler("start", self.start_command))

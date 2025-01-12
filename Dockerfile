@@ -1,7 +1,9 @@
 # add the contents of the Dockerfile here for python uvicorn server
-FROM python:3.12-slim
+FROM kaleabg/python-terraform:3.9
 
 WORKDIR /app
+
+RUN apt update && apt install -y libgomp1 libatlas-base-dev liblapack-dev libsqlite3-dev
 
 COPY requirements.txt .
 
