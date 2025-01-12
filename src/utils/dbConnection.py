@@ -24,7 +24,7 @@ class DBConnection:
         """Get table name - no need for async as it's a simple property access"""
         return self.table
     
-    def initialize_connection(self) -> None:
+    async def initialize_connection(self) -> None:
         """Initialize the database connection"""
         try:
             if not self.connection:
@@ -85,7 +85,7 @@ class DBConnection:
         try:
             if self.connection:
                 # Assuming SQLiteVSS connection has a close method 
-                await self.connection.close()
+                self.connection.close()
                 self.connection = None
                 logger.info("Database connection closed")
         except Exception as e:

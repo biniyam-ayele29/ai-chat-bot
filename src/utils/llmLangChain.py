@@ -190,13 +190,13 @@ class LLMLangchainBanking:
 
         vector_store = await self.dbConnection.get_vector_store()
         vector_store.add_documents(documents=all_splits)
-        await self.dbConnection.close_connection()
+        await self.dbConnection.close()
     
     async def retrieve_docs(self, query: str):
         try:
             vector_store = await self.dbConnection.get_vector_store()
             similar_docs = vector_store.similarity_search(query, k=2)
-            self.dbConnection.close_connection()
+            self.dbConnection.close()
             return similar_docs
         except Exception as e:
             print(e)
