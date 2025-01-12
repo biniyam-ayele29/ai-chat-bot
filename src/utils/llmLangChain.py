@@ -24,6 +24,8 @@ class LLMLangchainBanking:
         self.blog_posts = [
             "https://oromiabank.com/who-we-are/#corporate-statement",
             "https://oromiabank.com/conventional/",
+            "https://oromiabank.com/who-we-are/#ob-in-time",
+            "https://oromiabank.com/who-we-are/#modest-beginnings",
             "https://oromiabank.com/oroodigital-banking-services/",
             "https://oromiabank.com/board-of-directors/",
             "https://oromiabank.com/obs-executive-managements/",
@@ -156,8 +158,12 @@ class LLMLangchainBanking:
                             "et_pb_column et_pb_column_3_4 et_pb_column_2  et_pb_css_mix_blend_mode_passthrough et-last-child",
                             "et_builder_inner_content et_pb_gutters3",
                             "et_pb_section et_pb_section_0 et_section_regular",
-                            "et_builder_inner_content et_pb_gutters3",
                             "et_pb_section et_pb_section_0 et_section_regular",
+                            "et_pb_section et_pb_section_4 et_pb_with_background et_section_regular",
+                            "et_pb_section et_pb_section_6 et_section_regular",
+                            "dsm-content-wrapper dsm_advanced_tabs_child_1 animated dsm-content-image dsm-left dsm-active none",
+                            "dsm-content-wrapper dsm_advanced_tabs_child_2 animated dsm-content-image dsm-left dsm-active none",
+                            "et_pb_section et_pb_section_2 et_pb_with_background et_section_regular",
                             )
                 )
             ),
