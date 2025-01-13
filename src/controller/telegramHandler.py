@@ -20,8 +20,6 @@ class TelegramHandler:
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.webhook_url = os.getenv("WEBHOOK_URL")
         self.application = None
-        import sqlite3
-        print(dir(sqlite3.Connection))
         # self.application.initialize()
         # # Register command and message handlers
         # self.application.add_handler(CommandHandler("start", self.start_command))
@@ -36,9 +34,10 @@ class TelegramHandler:
 
     async def handle_message(self, update: Update, context: CallbackContext):
         question = update.message.text
+        chat_id = update.message.from_user.id
         # Use the trained banking model to get a response
         llm_langchain_banking = LLMLangchainBanking()
-        await update.message.reply_text(llm_langchain_banking.run([question]))
+        await update.message.reply_text(await llm_langchain_banking.run(input_messages=[question], chat_id=chat_id))
 
     async def telegram_webhook_call(self, request: Request):
         try:

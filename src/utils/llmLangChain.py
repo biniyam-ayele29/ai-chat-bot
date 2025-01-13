@@ -12,15 +12,18 @@ from langchain_core.messages import SystemMessage
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.checkpoint.memory import MemorySaver
 from src.utils.dbConnection import DBConnection
-import requests, json
+import requests, json, re
 
 class LLMLangchainBanking:
     def __init__(self):
         if not os.environ.get("OPENAI_API_KEY"):
             os.environ["OPENAI_API_KEY"] = getpass.getpass("Enter API key for OpenAI: ")
+        self.db_path = os.getenv("DB_PATH", "src/database/vector_store.db")
         self.llm = ChatOpenAI(model="gpt-4o")
+        self.connection = SQLiteVSS.create_connection(db_file=self.db_path)
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-        self.dbConnection = DBConnection()
+        self._vector_store = None
+        self.db_connection = DBConnection()
         self.blog_posts = [
             "https://oromiabank.com/who-we-are/#corporate-statement",
             "https://oromiabank.com/conventional/",
@@ -176,71 +179,77 @@ class LLMLangchainBanking:
                 json_lines=True
             )
         docs = web_loader.load() + json_loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200, length_function=len, is_separator_regex=False)
         all_splits = text_splitter.split_documents(docs)
-        total_documents = len(all_splits)
-        print("Total documents: ", total_documents)
-        return total_documents, all_splits
-    
+        with open("src/export-data/oromia_bank_docs.txt", "w", encoding="utf-8") as f:
+            f.write(f"{all_splits}\n\n")
+        return all_splits
+
     async def index_chunks(self) -> None:
-        total_documents, all_splits = await self.load_and_chunk_contents()
-        third = total_documents // 3
-
-        for i, document in enumerate(all_splits):
-            if i < third:
-                document.metadata["section"] = "beginning"
-            elif i < 2 * third:
-                document.metadata["section"] = "middle"
-            else:
-                document.metadata["section"] = "end"
-
-        vector_store = await self.dbConnection.get_vector_store()
-        vector_store.add_documents(documents=all_splits)
-        await self.dbConnection.close()
+        if self._vector_store is None:
+            self._vector_store = SQLiteVSS(
+                embedding=self.embeddings,
+                table="oromia_bank_docs",
+                connection=self.connection
+            )
+        all_splits = await self.load_and_chunk_contents()
+        self._vector_store.add_documents(documents=all_splits)
+        print("Total chunk of documents: ", len(all_splits))
     
     async def retrieve_docs(self, query: str):
         try:
-            vector_store = await self.dbConnection.get_vector_store()
-            similar_docs = vector_store.similarity_search(query, k=2)
-            self.dbConnection.close()
+            if self._vector_store is None:
+                self._vector_store = SQLiteVSS(
+                    embedding=self.embeddings,
+                    table="oromia_bank_docs",
+                    connection=self.connection
+                )
+            similar_docs = self._vector_store.similarity_search(query, k=2)
             return similar_docs
         except Exception as e:
             print(e)
             return []
     
-    def query_or_respond(self, state: MessagesState):
+    async def query_or_respond(self, state: MessagesState):
         llm_with_tools = self.llm.bind_tools([retrieve])
         system_message_content = """You are a professional Oromia Bank assistant. 
-        You are multilingual professional banking assistant, you can interact with Ethiopian majour languages.
+        You are Oromia bank customer service assistant, you can answer questions related to ormomia bank products and services.
+        You are multilingual professional oromia banking assistant, you can interact with Ethiopian majour languages.
         You can speak Amharic, Oromo, English and Tigrinya.
         You can answer questions related to Oromia Bank. Use retrieved context to answer questions. 
         For exchange rates, use the get_exchange_rate tool. Keep answers concise and within three sentences. 
+        If questions are not related to ormoima bank services, please respond with the message that "I'm sorry, I'm not sure about that."
         For Account opening and related questions answer with basic infomation and provice this link to file the online form https://oromiabank.com/open-account/.
         For bank history, mention beginning, middle and end. Identify yourself as an AI Oromian Banking assistant."""
         
         prompt = [SystemMessage(content=system_message_content)] + state["messages"]
-        response = llm_with_tools.invoke(prompt)
+        response = await llm_with_tools.ainvoke(prompt)
         return {"messages": [response]}
     
-    def generate(self, state: MessagesState):
+    async def generate(self, state: MessagesState):
         recent_tool_messages = [msg for msg in reversed(state["messages"]) if msg.type == "tool"]
         docs_content = "\n\n".join(doc.content for doc in recent_tool_messages[::-1])
         
         system_message_content = f"""You are a professional Oromia Bank assistant.
-        You are multilingual professional banking assistant, you can interact with Ethiopian majour languages.
-        You can speak Amharic, Oromo, English and Tigrinya. If the user asks in the local langueges please respond in the same language.
-        For exchange rates, use the exchange tool. Keep answers concise and within three sentences.
-        For exchange rate questions you have realtime data from the exchange tool.
-        For questions related to conversion, calculation of exchange rates with currencies, get the exchange rate from the exchange tool and do the math.
-        For exchange rate related questions, respond with the data you get from the exchange tool.
-        For any other questions, use the following context to answer questions:\n\n{docs_content}"""
+            You are Oromia bank customer service assistant, you can answer questions related to ormomia bank products and services.
+            You are multilingual professional oromia banking assistant, you can interact with Ethiopian majour languages.
+            You can speak Amharic, Oromo, English and Tigrinya. If the user asks in the local langueges please respond in the same language.
+            For exchange rates, use the exchange tool. Keep answers concise and within three sentences.
+            For exchange rate questions you have realtime data from the exchange tool.
+            For questions related to conversion, calculation of exchange rates with currencies, get the exchange rate from the exchange tool and do the math.
+            For exchange rate related questions, respond with the data you get from the exchange tool.
+            If questions are not related to ormoima bank services, please respond with the message that "I'm sorry, I'm not sure about that."
+            For any other questions, use the following context to answer questions.
+            
+            Context:\n\n{docs_content}
+            """
         
         conversation_messages = [msg for msg in state["messages"] 
-                               if msg.type in ("human", "system") 
-                               or (msg.type == "ai" and not msg.tool_calls)]
-        
+                           if msg.type in ("human", "system") 
+                           or (msg.type == "ai" and not msg.tool_calls)]
+    
         prompt = [SystemMessage(content=system_message_content)] + conversation_messages
-        response = self.llm.invoke(prompt)
+        response = await self.llm.ainvoke(prompt)
         return {"messages": [response]}
     
     def extract_currency(self, query: str) -> tuple[str, str]:
@@ -301,7 +310,7 @@ class LLMLangchainBanking:
         except Exception as e:
             return {"messages": [f"Unexpected error: {str(e)}"]}
 
-    def run(self, input_messages):
+    async def run(self, input_messages, chat_id):
         tools = ToolNode([retrieve])
         graph = StateGraph(MessagesState)
         
@@ -324,12 +333,16 @@ class LLMLangchainBanking:
         graph.add_edge("tools", "exchange")
         graph.add_edge("exchange", "generate")
         graph.add_edge("exchange", END)
+        graph.add_edge("tools", "generate")
         graph.add_edge("generate", END)
 
         memory = MemorySaver()
         chain = graph.compile(checkpointer=memory)
-        config = {"configurable": {"thread_id": "abc12443"}}
-        response = chain.invoke({"messages": input_messages}, config=config)
+        if chat_id:
+            config = {"configurable": {"thread_id": chat_id}}
+        else:
+            config = {"configurable": {"thread_id": "abc12443"}}
+        response = await chain.ainvoke({"messages": input_messages}, config=config)
         return response["messages"][-1].content
 
 @tool(response_format="content_and_artifact")
