@@ -1,0 +1,179 @@
+name: Deploy To Prod
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+  
+  # # Optional: Push-based trigger (uncomment to enable)
+  # push:
+  #   branches-ignore:
+  #     - 'prod'
+
+jobs:
+  create-or-force-pr:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for all branches and tags
+          token: ${{ secrets.GH_TOKEN }}  # Use GitHub PAT for auth
+
+      - name: Set branch name
+        id: branch-name
+        run: echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+
+      - name: Fetch all branches
+        run: |
+          git fetch --all
+          echo "Current branch: ${{ steps.branch-name.outputs.branch }}"
+          echo "Target branch: prod"
+
+      - name: Check differences between branches
+        id: check-diff
+        run: |
+          # Perform a strict git diff comparison
+          DIFF_COUNT=$(git diff --name-only origin/prod..HEAD | wc -l | xargs)
+          echo "Difference count: $DIFF_COUNT files"
+          
+          if [ "$DIFF_COUNT" -eq "0" ]; then
+            echo "No differences found between ${{ steps.branch-name.outputs.branch }} and prod. Skipping PR."
+            echo "has_diff=false" >> $GITHUB_OUTPUT
+          else
+            echo "Found $DIFF_COUNT differing files between ${{ steps.branch-name.outputs.branch }} and prod."
+            echo "has_diff=true" >> $GITHUB_OUTPUT
+            echo "diff_count=$DIFF_COUNT" >> $GITHUB_OUTPUT
+            
+            # Show the actual file differences for logging
+            git diff --name-only origin/prod..HEAD
+          fi
+
+      - name: Try to create Pull Request
+        if: steps.check-diff.outputs.has_diff == 'true'
+        id: create-pr
+        uses: repo-sync/pull-request@v2
+        with:
+          source_branch: ${{ steps.branch-name.outputs.branch }}
+          destination_branch: "prod"
+          pr_title: "Auto-MR: ${{ steps.branch-name.outputs.branch }} → prod"
+          pr_body: "Automated merge of latest changes from ${{ steps.branch-name.outputs.branch }} into prod. Force-pushed in case of conflict."
+          github_token: ${{ secrets.GH_TOKEN }}
+          pr_label: "automated-pr"
+        continue-on-error: true
+        
+      - name: Extract PR number 
+        if: steps.check-diff.outputs.has_diff == 'true' && steps.create-pr.outcome == 'success'
+        id: extract-pr
+        run: |
+          # Extract the PR number from the create-pr step output
+          PR_NUMBER=$(echo '${{ steps.create-pr.outputs.pr_url }}' | sed -E 's|.*/([0-9]+)$|\1|')
+          if [[ ! -z "$PR_NUMBER" ]]; then
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "Found PR #$PR_NUMBER"
+          else
+            echo "Failed to extract PR number from URL: ${{ steps.create-pr.outputs.pr_url }}"
+            echo "pr_number=" >> $GITHUB_OUTPUT
+          fi
+        
+      - name: Check PR creation status
+        if: steps.check-diff.outputs.has_diff == 'true'
+        id: pr-status
+        run: |
+          if [[ "${{ steps.create-pr.outcome }}" == "success" ]]; then
+            echo "Pull request created successfully!"
+            echo "pr_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to create PR normally. This might be due to conflicts."
+            echo "pr_created=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Auto-merge PR (Skip approval)
+        if: steps.check-diff.outputs.has_diff == 'true' && steps.pr-status.outputs.pr_created == 'true' && steps.extract-pr.outputs.pr_number != ''
+        id: auto-merge-pr
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GH_TOKEN }}
+          script: |
+            const prNumber = parseInt('${{ steps.extract-pr.outputs.pr_number }}');
+            const branch = '${{ steps.branch-name.outputs.branch }}';
+            
+            console.log(`Auto-merging PR #${prNumber} from ${branch} to prod`);
+            
+            try {
+              // Skip approval (can't approve your own PR) and go straight to merge
+              // If your repo requires approvals, you need to either:
+              // 1. Configure branch protection to exclude this specific workflow
+              // 2. OR use a different token with bypass permissions
+              
+              console.log('Merging the PR...');
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber,
+                merge_method: 'merge',
+                commit_title: `Merge ${branch} into prod [auto]`,
+                commit_message: `Automatically merged ${branch} into prod by GitHub Actions workflow`
+              });
+              console.log('PR merged successfully!');
+            } catch (error) {
+              console.error('Error in auto-merge process:', error);
+              core.setFailed(`Failed to merge PR: ${error.message}`);
+              
+              // If merge fails (possibly due to branch protection), fall back to force push
+              console.log('Merge failed, will attempt force push instead');
+              core.setOutput('merge_failed', 'true');
+            }
+
+      - name: Force push to prod if PR cannot be created or merged
+        if: |
+          steps.check-diff.outputs.has_diff == 'true' && 
+          (steps.pr-status.outputs.pr_created == 'false' || 
+           steps.auto-merge-pr.outputs.merge_failed == 'true')
+        run: |
+          echo "Force pushing changes from ${{ steps.branch-name.outputs.branch }} to prod..."
+          
+          # Configure Git with a name and email for the automated commits
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          
+          # Make sure we're on the current branch
+          git checkout ${{ steps.branch-name.outputs.branch }}
+          
+          # Force push the current branch to prod
+          git push origin HEAD:prod --force
+          
+          echo "Successfully force-pushed changes from ${{ steps.branch-name.outputs.branch }} to prod branch!"
+          
+          # Create a comment on the commit about the forced merge
+          COMMIT_SHA=$(git rev-parse HEAD)
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GH_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/commits/$COMMIT_SHA/comments \
+            -d '{"body": "This commit was force-pushed to prod branch by GitHub Actions due to merge conflicts."}'
+
+      - name: Cleanup and summary
+        if: always()
+        run: |
+          if [[ "${{ steps.check-diff.outputs.has_diff }}" == "true" ]]; then
+            echo "Summary:"
+            if [[ "${{ steps.pr-status.outputs.pr_created }}" == "true" ]]; then
+              echo "✅ Created pull request from ${{ steps.branch-name.outputs.branch }} to prod"
+              
+              if [[ ! -z "${{ steps.extract-pr.outputs.pr_number }}" ]]; then
+                if [[ "${{ steps.auto-merge-pr.outputs.merge_failed }}" == "true" ]]; then
+                  echo "⚠️ Failed to auto-merge PR #${{ steps.extract-pr.outputs.pr_number }} - used force push instead"
+                else
+                  echo "🔄 Auto-merged PR #${{ steps.extract-pr.outputs.pr_number }}"
+                fi
+              else
+                echo "⚠️ Could not auto-merge: PR number extraction failed"
+              fi
+            else
+              echo "⚠️ Force-pushed changes from ${{ steps.branch-name.outputs.branch }} to prod due to conflicts"
+            fi
+            echo "Number of changed files: ${{ steps.check-diff.outputs.diff_count }}"
+          else
+            echo "✅ No differences found between ${{ steps.branch-name.outputs.branch }} and prod - no action taken"
+          fi
