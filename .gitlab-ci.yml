@@ -1,0 +1,161 @@
+stages:
+  - build
+  - deploy
+
+
+# This file is a template, and might need editing before it works on your project.
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: tcp://localhost:2375
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_FILE: "Dockerfile"
+  #FOR DOCKER CACHING
+  DOCKER_BUILDKIT: 1
+  # DOCKER_VERSION: 20.10.24
+  DOCKER_VERSION: 24.0.2
+
+docker-build:
+  # Official docker image.
+  image: docker:${DOCKER_VERSION}
+  stage: build
+  cache: 
+    key: $CI_PROJECT_ID
+    paths:
+      - node_modules/
+  services:
+    - name: docker:${DOCKER_VERSION}-dind
+      command: ["dockerd", "--host=tcp://localhost:2375"]
+  before_script:
+    - base64 -d $GCP_REGISTRY_AUTH_KEY | docker login -u _json_key --password-stdin https://gcr.io
+    # Update Microfronted root service to import URL
+
+
+  script:
+    - export VERSION=v`cat .next-version`
+    # - export PROJECT_NAME=$(echo $CI_PROJECT_NAME | sed 's#\.#_#g' | sed 's#\-#_#g' | tr '[:upper:]' '[:lower:]')
+    - export BUILD_IMAGE_NAME="gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/${CI_COMMIT_REF_SLUG}:$CI_COMMIT_SHA"
+    - export TAUSI_BUILD_IMAGE_NAME="gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}-tausi/${CI_COMMIT_REF_SLUG}:$CI_COMMIT_SHA"
+    - export BUILD_IMAGE_NAME_LATEST="gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/${CI_COMMIT_REF_SLUG}:$VERSION"
+    - docker pull $BUILD_IMAGE_NAME_LATEST || true
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+          export ADDITIONAL_BUILD_ARGS=$STAGING_ADDITIONAL_BUILD_ARGS
+          export TAUSI_ADDITIONAL_BUILD_ARGS=$TAUSI_STAGING_ADDITIONAL_BUILD_ARGS
+      fi
+    - docker build --cache-from $BUILD_IMAGE_NAME_LATEST --build-arg NPM_TOKEN=$NPM_TOKEN --build-arg BUILDKIT_INLINE_CACHE=1  ${ADDITIONAL_BUILD_ARGS} -t ${BUILD_IMAGE_NAME} . -f ${DOCKER_FILE}
+    - docker build --cache-from $BUILD_IMAGE_NAME_LATEST --build-arg NPM_TOKEN=$NPM_TOKEN --build-arg BUILDKIT_INLINE_CACHE=1  ${TAUSI_ADDITIONAL_BUILD_ARGS} -t ${TAUSI_BUILD_IMAGE_NAME} . -f ${DOCKER_FILE}
+
+    # - docker build -t ${BUILD_IMAGE_NAME} . -f ${DOCKER_FILE}
+    - docker tag "${BUILD_IMAGE_NAME}" "$BUILD_IMAGE_NAME_LATEST"
+    - docker push "${BUILD_IMAGE_NAME}"
+    - docker push "$BUILD_IMAGE_NAME_LATEST"
+    - docker push "$TAUSI_BUILD_IMAGE_NAME"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "prod"'
+      when: always
+      
+trigger-deployment-jitume:
+  stage: deploy
+  trigger:
+    project: biniyam_gebeya/google-cloud-run
+    branch: "main"
+  variables:
+    TRIGGER_SOURCE_PROJECT: ${CI_PROJECT_NAME}
+    # TRIGGER_SOURCE_BRANCH: $CI_COMMIT_REF_NAME
+    TRIGGERING_PROJECT_IMAGE_NAME: "gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/${CI_COMMIT_REF_SLUG}:$CI_COMMIT_SHA"
+    TRIGGERING_PROJECT_PORT: "80"
+    DEPLOYMENT_GOOGLE_CLOUD_PROJECT_ID: "g-saas"
+  only:
+    - main
+
+trigger-deployment-tausi:
+  stage: deploy
+  trigger:
+    project: biniyam_gebeya/google-cloud-run
+    branch: "main"
+  variables:
+    TRIGGER_SOURCE_PROJECT: ${CI_PROJECT_NAME}-tausi
+    # TRIGGER_SOURCE_BRANCH: $CI_COMMIT_REF_NAME
+    TRIGGERING_PROJECT_IMAGE_NAME: "gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}-tausi/${CI_COMMIT_REF_SLUG}:$CI_COMMIT_SHA"
+    TRIGGERING_PROJECT_PORT: "80"
+    DEPLOYMENT_GOOGLE_CLOUD_PROJECT_ID: "g-saas"
+  only:
+    - main  
+
+update_helm:
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_FILE: "Dockerfile"
+    GIT_STRATEGY: clone
+    HELM_REPO_BRANCH: main
+    GIT_DEPTH: 0
+
+  image: docker:20.10.16
+  services:
+    - name: docker:20.10.16-dind
+
+  stage: deploy
+  retry: 1
+  before_script:
+    - |
+        wget https://github.com/Nightapes/go-semantic-release/releases/download/v2.1.1/go-semantic-release.linux_x86_64.zip
+        unzip go-semantic-release.linux_x86_64.zip
+        chmod +x go-semantic-release.linux_x86_64
+
+    # - export CI_PROJECT_NAMESPACE=$(echo $CI_PROJECT_NAME | sed 's#\.#_#g' | sed 's#\-#_#g' |  tr '[:upper:]' '[:lower:]')
+    - export DOCKER_BUILD_IMAGE="gcr.io/${GCP_PROJECT_ID}/g-saas/${CI_PROJECT_NAMESPACE}/${CI_PROJECT_NAME}/${CI_COMMIT_REF_SLUG}"
+    - export PROJECT_NAME=$(echo ${CI_PROJECT_NAME} | tr '[:upper:]' '[:lower:]' | tr '.' '-' | tr '_' '-')
+    - export TAG_FULL_PATH=".image.tag"
+    - export REPO_FULL_PATH=".image.repository"
+    - export VERSION_CHART=".version"
+    - |
+        if [ "$CI_COMMIT_REF_NAME" = "prod" ]; then
+            export CD_MANIFEST_FILE=${CI_PROJECT_NAME}/values.yaml
+            # export VERSION=`./go-semantic-release.linux_x86_64 last`
+            export VERSION=${CI_COMMIT_SHA}
+        fi
+        if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+            export CD_MANIFEST_FILE=${CI_PROJECT_NAME}/values.yaml
+            # export VERSION=`./go-semantic-release.linux_x86_64 last`
+            export VERSION=${CI_COMMIT_SHA}
+        fi
+
+    - |
+      export CD_GIT_REPOSITORY=git@gitlab.tools.gebeya.io:g-saas/jitume-saas/gebeya-jitume-helm-chart.git
+      export CD_CHART_REPO=gebeya-jitume-helm-chart
+    - wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+    - chmod a+x /usr/local/bin/yq
+    - yq --version
+    # Install curl
+    - apk add --no-cache curl bash openssl
+    # Install Helm
+    - curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 > get_helm.sh
+    - chmod 700 get_helm.sh
+    - ./get_helm.sh
+  script:
+    # Add SSH key to root
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - ssh-keyscan -H gitlab.tools.gebeya.io > /root/.ssh/known_hosts
+    - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+    - chmod 644 ~/.ssh/known_hosts
+    # Git
+    - apk add --no-cache git
+    - git config --global user.name "Gitlab Service Account"
+    - git config --global user.email "no-reply@gebeya.com"
+    - git clone --single-branch --branch $HELM_REPO_BRANCH $CD_GIT_REPOSITORY
+    - cd $CD_CHART_REPO
+    # Helm
+    - |
+      yq -i '(eval(strenv(TAG_FULL_PATH))) = env(VERSION)' $CD_MANIFEST_FILE && 
+      yq -i '(eval(strenv(REPO_FULL_PATH))) = env(DOCKER_BUILD_IMAGE)' $CD_MANIFEST_FILE
+    - export PROJECT_NAME_CHART=$(echo "$TAG_FULL_PATH" | awk -F'.' '{print $2}')
+    - echo "..........Helm lint on the helm-driver................"
+    - git commit -am "Update the image tag" && git push origin $HELM_REPO_BRANCH
+    - echo "Check your deployment status at https://argocd.tools.gebeya.io"
+  rules:
+    - if: $CI_COMMIT_BRANCH == "prod"
+      when: always
