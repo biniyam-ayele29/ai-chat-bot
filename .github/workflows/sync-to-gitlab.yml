@@ -1,0 +1,35 @@
+name: Sync to GitLab (Automated)
+
+on:
+  workflow_dispatch:  # Allows manual triggering
+  push:
+    branches:
+      - main
+      - prod
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for all branches and tags
+
+      - name: Set Up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions@github.com"
+
+      - name: Add GitLab Remote
+        run: |
+          git remote add gitlab https://oauth2:${{ secrets.GITLAB_TOKEN }}@gitlab.tools.gebeya.io/g-saas/jitume-saas/gebeya-jitume.git
+
+      - name: Push Changes to GitLab
+        run: |
+          # Get current branch name
+          BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
+          
+          # Force push to GitLab to ignore remote GitLab changes
+          git push -f gitlab ${BRANCH_NAME}:${BRANCH_NAME}
